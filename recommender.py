@@ -1,65 +1,81 @@
+from pathlib import Path
+import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
-from sklearn.neighbors import NearestNeighbors
+from rapidfuzz import process, fuzz
 
-df = pd.read_csv("C:/Users/HARSHITA/OneDrive/Desktop/music/data/spotify-tracks-dataset-detailed.csv")
+DATA = Path(__file__).parent / "data"
+df = pd.read_csv(DATA / "spotify_tracks_final.csv")
+df["_title"] = df["_title"].fillna("").astype(str)
+df["_artist"] = df["_artist"].fillna("").astype(str)
+X = np.load(DATA / "X_scaled.npy")
+assert len(df) == len(X)
 
-features = [
-    "danceability","energy","acousticness","instrumentalness","liveness","speechiness","valence","tempo","loudness"
-]
+REGIONAL = {"indian", "pop-film", "k-pop", "j-pop", "j-rock", "j-idol", "j-dance",
+            "mandopop", "cantopop", "anime", "latin", "latino", "brazil", "samba",
+            "pagode", "sertanejo", "mpb", "forro", "turkish", "malay", "iranian",
+            "german", "french", "spanish", "swedish", "salsa", "tango", "reggaeton"}
 
-X = df[features].fillna(0)
+df["_regional"] = df["all_genres"].fillna("").apply(
+    lambda g: bool(REGIONAL & set(g.split(", ")))
+)
+df["_primary"] = df["_artist"].str.split(";").str[0].str.strip()
 
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+df["_regional"] |= df["track_name"].str.contains(r'(?:\(|-\s*)From\s+"', na=False, regex=True)
 
-knn = NearestNeighbors(
-    n_neighbors=6,
-    metric ="cosine"
+BLOCK_ARTISTS = {"sachet tandon", "karan aujla"}
+df["_regional"] |= df["_artist"].apply(
+    lambda a: any(x.strip() in BLOCK_ARTISTS for x in a.split(";"))
 )
 
-knn.fit(X_scaled)
+# propagate: an artist with mostly regional tracks is regional everywhere
+ex = df[["_artist", "_regional"]].copy()
+ex["_artist"] = ex["_artist"].str.split(";")
+ex = ex.explode("_artist")
+share = ex.groupby("_artist")["_regional"].mean()
+regional_artists = set(share[share >= 0.5].index)
 
-def recommend(song_name, n=5):
-    matches = df[
-        df["track_name"].str.lower() == song_name.lower()
-    ]
+df["_regional"] |= df["_artist"].apply(
+    lambda a: any(x in regional_artists for x in a.split(";"))
+)
 
-    if matches.empty:
+def find_song(title, artist=None):
+    pool = df
+    if artist:
+        pool = df[df["_artist"].str.contains(artist.lower().strip(), regex=False)]
+    if pool.empty:
         return None
+    hit = process.extractOne(title.lower().strip(), pool["_title"],
+                             scorer=fuzz.WRatio, score_cutoff=85)
+    if hit is None:
+        return None
+    rows = pool[pool["_title"] == hit[0]]
+    return rows["popularity"].idxmax()
 
-    song_index = matches.index[0]
-    song_vector = X_scaled[song_index].reshape(1, -1)
 
-    # Find nearest neighbors
-    distances, indices = knn.kneighbors(
-        song_vector,
-        n_neighbors=n + 1
-    )
+def recommend(title, artist=None, n=5, min_pop=50):
+    """Returns (matched_song_row, recommendations_df), or (None, None)."""
+    pos = find_song(title, artist)
+    if pos is None:
+        return None, None
+    q = df.loc[pos]
+    genres = q["all_genres"].split(", ")
 
-    # First result is the song itself, so remove it
-    recommended_indices = indices[0][1:]
+    mask = (df["track_genre"].isin(genres)
+            & (df["popularity"] >= min_pop)
+            & (df.index != pos)
+            & (df["_primary"] != q["_primary"]))
+    if not q["_regional"]:
+        mask &= ~df["_regional"]
+    sub = df[mask].copy()
+    if sub.empty:
+        return q, None
 
-    recommendations = df.iloc[recommended_indices][
-        ["track_name", "artists", "track_genre"] + features
-    ].copy()
+    d = np.linalg.norm(X[sub.index] - X[pos], axis=1)
+    sub["audio_sim"] = 1 / (1 + d)
+    sub["score"] = sub["audio_sim"] + 0.1 * sub["popularity"] / 100
 
-    # Convert cosine distance to cosine similarity
-    recommendations["similarity"] = (
-        1 - distances[0][1:]
-    )
-
-    print(recommendations.to_string(index=False))
-
-if __name__ == "__main__":
-    result = recommend("Blinding Lights")
-
-    if result is not None:
-        print(result.to_string(index=False))
-    else:
-        print("Song not Found")
-
-    song = df[df["track_name"].str.lower() == "blinding lights"].iloc[0]
-
-    print("\nBlinding Lights features:")
-    print(song[features])
+    sub["_base"] = sub["_title"].str.replace(r"\s+-\s+.*$", "", regex=True).str.strip()
+    sub = sub.sort_values("score", ascending=False)
+    sub = sub.drop_duplicates("_base").groupby("_primary", sort=False).head(1).head(n)
+    return q, sub[["track_id", "track_name", "artists", "track_genre",
+                   "popularity", "audio_sim"]]

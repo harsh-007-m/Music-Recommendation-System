@@ -3,3 +3,7 @@ __pycache__/
 .venv/
 venv/
 *.pyc
+*.ipynb_checkpoints
+data/spotify-tracks-dataset-detailed.csv
+data/spotify_tracks_clean.csv
+data/scaler.joblib
