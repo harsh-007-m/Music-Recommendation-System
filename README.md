@@ -1,73 +1,70 @@
 # 🎧 Music Recommender
- 
-Type in a song you like and get 5 others that sound similar. Built with Python, pandas, NumPy and Streamlit, using Spotify audio features.
- 
-**Live demo:** 
- 
+
+Type a song you like and get five others that sound similar. A content-based recommender built on Spotify audio features, with a Streamlit interface.
+
+**Live demo:** _https://bro-recommend-a-song.streamlit.app/
+
+## What it does
+
+- Finds your song with fuzzy matching, so small typos still work, and accepts an optional artist to pick the right version of a common title.
+- Recommends five songs from the same genre that match its tempo, energy, mood and acoustic character, using only well-known tracks.
+- Shows one song per artist, with a generated cover and a link that opens each track on Spotify.
+
 ## How it works
- 
-1. **Find the song.** Fuzzy title matching (RapidFuzz), with an optional artist filter. If several songs share a title, the most popular one is used.
-2. **Pick candidates.** Only songs that share a genre with the input song and have a popularity score of at least 50.
-3. **Rank by sound.** Each candidate is scored by its Euclidean distance to the input song across 12 audio features, plus a small popularity bonus.
-4. **Clean up the list.** One result per artist, alternate versions of the same song collapsed, and regional or non-English tracks removed unless the input song is itself regional.
-### Audio features used
- 
-`danceability`, `energy`, `acousticness`, `instrumentalness`, `liveness`, `speechiness`, `valence`, `tempo`, `loudness`, `key` (encoded as `key_sin` / `key_cos` because it is circular), and `mode`.
- 
-Features are transformed and weighted before comparison: `speechiness` and `liveness` are log-transformed, tiny `instrumentalness` values are zeroed, `loudness` is clipped at -25 dB, and everything is standardized. Features describing the overall feel of a song (energy, danceability, acousticness, valence, instrumentalness) get the highest weights. `key` and `mode` get the lowest.
- 
+
+1. **Match the song.** The input is compared against about 79,000 cleaned titles. If several songs share a title, the most popular one wins unless an artist is given.
+2. **Pick candidates.** Only songs that share a genre with the input and have a popularity of at least 50.
+3. **Rank by sound.** Each candidate is scored by its Euclidean distance to the input across 12 audio features, converted to a similarity of `1 / (1 + distance)`, with a small popularity bonus (`0.1 × popularity / 100`).
+4. **Tidy the list.** One result per artist (collaborations count under the first-listed artist), alternate versions of the same song collapsed, and regional or non-English songs removed unless the input song is regional itself.
+
+### Audio features
+
+`danceability`, `energy`, `acousticness`, `instrumentalness`, `liveness`, `speechiness`, `valence`, `tempo`, `loudness`, `mode`, and `key`, encoded as `key_sin` / `key_cos` because pitch class is circular.
+
+Before comparison, `speechiness` and `liveness` are log-transformed, tiny `instrumentalness` values are zeroed, and `loudness` is clipped at -25 dB. Everything is then standardized and weighted. Features that describe how a song feels (energy, danceability, acousticness, valence, instrumentalness) get the highest weights, while `key` and `mode` get the lowest.
+
+## Design decisions
+
+- **Genre first, then distance.** The first version used k-nearest-neighbors with cosine distance over the whole catalog. It found songs that sounded alike but came from unrelated genres (a synth-pop track matched drum-and-bass and show tunes). Filtering by genre first fixed that, and the remaining set is small enough to compute exact distances directly, so scikit-learn isn't needed at runtime.
+- **Euclidean over cosine.** After standardizing, cosine only compares the direction of a song's deviation from average, while Euclidean also respects how far apart two songs are.
+- **Dedupe aggressively.** The raw data lists the same track once per genre, plus remasters and re-releases. Without dedupe, a song's closest neighbors were its own copies.
+
+## Results
+
+I judged the output by ear on five seed songs across pop, rap, rock, ballads and indie, rating each of the 25 recommendations as a good or poor fit for a shared playlist. About 22 of 25 fit. This is an informal check and not a benchmark. The misses were mainly non-English songs that the genre tags couldn't separate from English-language ones.
+
 ## Project structure
- 
+
 ```
-music/
-├── app.py                 # Streamlit interface
-├── recommender.py         # search + recommendation logic
+Music-Recommendation-System/
+├── app.py                  # Streamlit interface
+├── recommender.py          # search, filtering and ranking logic
 ├── requirements.txt
+├── .streamlit/
+│   └── config.toml         # theme
 ├── data/
 │   ├── spotify_tracks_final.csv   # cleaned catalog (~79k tracks)
-│   └── X_scaled.npy               # processed feature matrix
+│   └── X_scaled.npy               # transformed, weighted feature matrix
 └── notebooks/
     ├── 01_data_preprocessing.ipynb
-    └── 02_feature_engineering.ipynb
+    ├── 02_transforming.ipynb
+    └── 03_testing_recommender.ipynb
 ```
- 
-## Data preparation
- 
-Starting from a Spotify tracks dataset (Kaggle) of about 113k rows, the pipeline:
- 
-- removes missing values and exact duplicates
-- merges repeated copies of the same track (it appears once per genre) into one row, keeping all genres in `all_genres`
-- collapses re-releases that share a cleaned title and artist
-- drops broken tracks (tempo or time signature of 0, durations under 30 seconds or over 15 minutes, near-silent loudness)
-- drops spoken-word content (speechiness above 0.8) and comedy
-This leaves about 79,000 tracks.
- 
-## Run it locally
- 
-```bash
-git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git
-cd YOUR_REPO
-pip install -r requirements.txt
-streamlit run app.py
-```
- 
-## Deploy
- 
-The app runs on [Streamlit Community Cloud](https://share.streamlit.io): connect the GitHub repo, set the main file to `app.py`, and deploy.
- 
+
 ## Limitations
- 
-- **Audio features describe sound, not taste.** They don't capture era, lyrics, language or which songs listeners actually play together, so some matches are "similar sounding" without being "something you'd put on one playlist".
-- **No language column.** The dataset's `pop` and `hip-hop` tags include non-English music, so regional filtering relies on genre tags, soundtrack-style titles and a manual artist blocklist (`BLOCK_ARTISTS` in `recommender.py`). Occasional leaks are possible.
-- **Limited catalog.** Songs missing from the dataset return "Song not found".
-- **Genre tags are noisy.** Some songs carry unexpected genre labels, which affects their results.
-## Ideas for improvement
- 
-- Re-rank candidates using listening-based similarity (for example Last.fm's `track.getSimilar`)
-- Support multiple seed songs to build a taste profile
-- Add a language or region signal to remove the need for the blocklist
-- Tune feature weights with a larger listening test
-## Tech stack
- 
+
+- **Sound is not taste.** Audio features can't see lyrics, era, language or what listeners play together, so some matches sound similar without belonging on one playlist.
+- **No language column.** The dataset's `pop` and `hip-hop` tags include non-English music. Regional songs are filtered using genre tags, soundtrack-style titles ("From ...") and a manual artist blocklist (`BLOCK_ARTISTS` in `recommender.py`), so occasional misses remain.
+- **Fixed catalog.** Songs missing from the dataset return "no match", and results can't include recent releases.
+- **Noisy genre labels.** Some tracks carry unexpected genres, which changes what they're compared against.
+
+## Ideas for next steps
+
+- Re-rank candidates with listening-based similarity (for example Last.fm's `track.getSimilar`)
+- Accept several seed songs and build a taste profile
+- Add a language signal to replace the manual blocklist
+- Tune feature weights against a larger set of rated examples
+
+## Built with
+
 Python · pandas · NumPy · RapidFuzz · Streamlit
- 
